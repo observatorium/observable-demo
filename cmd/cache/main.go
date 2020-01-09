@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/observatorium/observable-demo/pkg/cache"
 	"github.com/oklog/run"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -32,13 +33,22 @@ func main() {
 
 	// Register standard Go metric collectors, which are by default registered when using global registry.
 	reg.MustRegister(
+		// TODO: version!
+		prometheus.NewGoCollector(),
+		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "configured_max_objects",
 			Help:      "Configured maximum number of objects cache can take.",
 		}, func() float64 { return float64(*maxObjectsCount) }),
-		prometheus.NewGoCollector(),
-		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
+	)
+
+	// TODO: Tripperware when creating storage ~ local mocked memcached
+
+	// Setup cache.
+	c := cache.NewCache(
+		nil,
+		cache.NewMetrics(prometheus.WrapRegistererWithPrefix(namespace,reg)),
 	)
 
 	// Listen for termination signals.
@@ -53,7 +63,12 @@ func main() {
 	// Server listen.
 	{
 		mux := http.NewServeMux()
+
+		// TODO: Add http middleware: request{code, handler, method}
+		// Shared metric - we can share dashboards, alerts.
 		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+		mux.Handle("/set", http.HandlerFunc(c.SetHandler))
+		mux.Handle("/get", http.HandlerFunc(c.GetHandler))
 
 		srv := &http.Server{Addr: *addr, Handler: mux}
 
@@ -61,7 +76,8 @@ func main() {
 			return srv.ListenAndServe()
 		}, func(error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			cancel()
+			defer cancel()
+
 			if err := srv.Shutdown(ctx); err != nil {
 				log.Println("error: server shutdown failed")
 			}

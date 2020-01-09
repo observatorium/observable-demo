@@ -11,13 +11,14 @@ import (
 type metrics struct {
 	sets            prometheus.Counter
 	gets            *prometheus.CounterVec
-	storageFailures prometheus.Counter
+	opsFailures *prometheus.CounterVec
 	opsDuration     *prometheus.HistogramVec
 }
 
 func NewMetrics(reg prometheus.Registerer) *metrics {
 	var m metrics
 
+	// It's a duplicated to middleware, but we do that on purpose.
 	m.sets = prometheus.NewCounter(prometheus.CounterOpts{
 		Subsystem:   "cache",
 		Name:        "operations_total",
@@ -30,23 +31,23 @@ func NewMetrics(reg prometheus.Registerer) *metrics {
 		Help:        "Total number of cache hits and misses.",
 		ConstLabels: map[string]string{"operation": "get"},
 	}, []string{"state"})
-	m.storageFailures = prometheus.NewCounter(prometheus.CounterOpts{
+	m.opsFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Subsystem: "cache",
-		Name:      "storage_failures_total",
+		Name:      "operation_failures_total",
 		Help:      "Total number of cache failures against storage.",
-	})
+	}, []string{"operation"})
 	m.opsDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Subsystem: "cache",
 		Name:      "operation_duration_seconds",
 		Help:      "Time it took to perform cache operation.",
 		Buckets:   []float64{0.01, 0.1, 0.3, 0.6, 1, 3, 6, 9, 20, 30, 60, 90, 120, 240, 360, 720},
-	}, []string{"operation"})
+	}, []string{"operation"}) // TODO: Failure duration vs success duration.
 
 	if reg != nil {
 		reg.MustRegister(
 			m.sets,
 			m.gets,
-			m.storageFailures,
+			m.opsFailures,
 			m.opsDuration,
 		)
 	}
@@ -74,12 +75,15 @@ func NewCache(storage Storage, metrics *metrics) *Cache {
 
 func (c *Cache) SetHandler(w http.ResponseWriter, req *http.Request) {
 	start := time.Now()
-	defer func() { c.metrics.opsDuration.WithLabelValues("set").Observe(float64(time.Since(start))) }()
+	defer func() {
+		c.metrics.opsDuration.WithLabelValues("set").Observe(float64(time.Since(start)))
+	}()
 
 	if err := req.ParseForm(); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+
 	key := req.Form["key"]
 	if len(key) != 1 {
 		w.WriteHeader(http.StatusBadRequest)
@@ -93,7 +97,7 @@ func (c *Cache) SetHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := c.storage.Set(key[0], value[0]); err != nil {
-		c.metrics.storageFailures.Inc()
+		c.metrics.opsFailures.WithLabelValues("set").Inc()
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -102,7 +106,9 @@ func (c *Cache) SetHandler(w http.ResponseWriter, req *http.Request) {
 
 func (c *Cache) GetHandler(w http.ResponseWriter, req *http.Request) {
 	start := time.Now()
-	defer func() { c.metrics.opsDuration.WithLabelValues("get").Observe(float64(time.Since(start))) }()
+	defer func() {
+		c.metrics.opsDuration.WithLabelValues("get").Observe(float64(time.Since(start)))
+	}()
 
 	if err := req.ParseForm(); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -117,16 +123,18 @@ func (c *Cache) GetHandler(w http.ResponseWriter, req *http.Request) {
 	value, err := c.storage.Get(key[0])
 	if errors.Is(err, NotFoundErr) {
 		c.metrics.gets.WithLabelValues("miss")
-		w.Write([]byte(value))
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	if err == nil {
-		c.metrics.gets.WithLabelValues("hit")
-		w.Write([]byte(value))
+	if err != nil {
+		c.metrics.opsFailures.WithLabelValues("get").Inc()
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	c.metrics.storageFailures.Inc()
-	w.WriteHeader(http.StatusInternalServerError)
+	c.metrics.gets.WithLabelValues("hit")
+	w.Write([]byte(value))
 	return
+
+
 }
