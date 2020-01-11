@@ -29,7 +29,7 @@ deps:
 .PHONY: format
 format: $(GOIMPORTS)
 	@echo ">> formatting code"
-	@go fmt -w $(FILES_TO_FMT)
+	@goimports -w $(FILES_TO_FMT)
 
 # TODO: linting.
 

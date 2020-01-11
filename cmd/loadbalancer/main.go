@@ -5,29 +5,36 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"net"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/observatorium/observable-demo/pkg/cache"
+	"github.com/observatorium/observable-demo/pkg/conntrack"
+	"github.com/observatorium/observable-demo/pkg/lbtransport"
 	"github.com/oklog/run"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-const namespace = "obs_demo"
+const namespace = "loadbalancer"
 
 func main() {
 	var (
-		addr            = flag.String("listen-address", ":8080", "The address to listen on for HTTP requests.")
-		maxObjectsCount = flag.Int("max-objects", 1000, "Maximum number of objects cache can store.")
+		addr             = flag.String("listen-address", ":8080", "The address to listen on for HTTP requests.")
+		targets          = flag.String("targets", "", "Comma-separated URLs for target to load balance to.")
+		blacklistBackoff = flag.Duration("failed_target_backoff_duration", 2*time.Second, "Backoff duration in case of dial error for given backend")
 
 		g = &run.Group{}
 
-		// Start command's metric registry.
+		// Start our metric registry.
 		reg = prometheus.NewRegistry()
+
+		ctx = context.Background()
 	)
 	flag.Parse()
 
@@ -37,19 +44,12 @@ func main() {
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-			Namespace: namespace,
-			Name:      "configured_max_objects",
-			Help:      "Configured maximum number of objects cache can take.",
-		}, func() float64 { return float64(*maxObjectsCount) }),
+			Name: "configured_failed_target_backoff_duration_seconds",
+			Help: "Configured backoff time for unavailable target.",
+		}, func() float64 { return blacklistBackoff.Seconds() }),
 	)
 
-	// TODO: Tripperware when creating storage ~ local mocked memcached
-
-	// Setup cache.
-	c := cache.NewCache(
-		nil,
-		cache.NewMetrics(prometheus.WrapRegistererWithPrefix(namespace,reg)),
-	)
+	// TODO: Tripperware metrics
 
 	// Listen for termination signals.
 	{
@@ -60,20 +60,34 @@ func main() {
 			close(cancel)
 		})
 	}
-	// Server listen.
+	// Server listen for loadbalancer.
 	{
 		mux := http.NewServeMux()
+
+		static := lbtransport.NewStaticDiscovery(strings.Split(*targets, ","), reg)
+		picker := lbtransport.NewRoundRobinPicker(ctx, *blacklistBackoff)
+		l7LoadBalancer := &httputil.ReverseProxy{
+			Transport: lbtransport.NewLoadBalancingTransport(static, picker, lbtransport.NewMetrics(reg)),
+		}
 
 		// TODO: Add http middleware: request{code, handler, method}
 		// Shared metric - we can share dashboards, alerts.
 		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-		mux.Handle("/set", http.HandlerFunc(c.SetHandler))
-		mux.Handle("/get", http.HandlerFunc(c.GetHandler))
+		mux.Handle("/lb", l7LoadBalancer)
 
 		srv := &http.Server{Addr: *addr, Handler: mux}
 
+		l, err := net.Listen("tcp", *addr)
+		if err != nil {
+			log.Fatalf("new listener failed %v; exiting\n", err)
+		}
 		g.Add(func() error {
-			return srv.ListenAndServe()
+			return srv.Serve(
+				conntrack.NewInstrumentedListener(l, conntrack.NewListenerMetrics(
+					prometheus.WrapRegistererWithPrefix(namespace, reg),
+				),
+				),
+			)
 		}, func(error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
