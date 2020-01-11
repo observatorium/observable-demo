@@ -10,14 +10,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-type listenerMetrics struct {
+type ListenerMetrics struct {
 	acceptedTotal      prometheus.Counter
 	failedAcceptsTotal prometheus.Counter
 	closedTotal        prometheus.Counter
 }
 
-func NewListenerMetrics(reg prometheus.Registerer) *listenerMetrics {
-	m := &listenerMetrics{
+func NewListenerMetrics(reg prometheus.Registerer) *ListenerMetrics {
+	m := &ListenerMetrics{
 		acceptedTotal: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Subsystem: "conntrack",
@@ -46,11 +46,11 @@ func NewListenerMetrics(reg prometheus.Registerer) *listenerMetrics {
 
 type connTrackListener struct {
 	net.Listener
-	metrics *listenerMetrics
+	metrics *ListenerMetrics
 }
 
 // NewInstrumentedListener returns the given listener wrapped in connection listener exposing Promethues metric.
-func NewInstrumentedListener(inner net.Listener, metrics *listenerMetrics) net.Listener {
+func NewInstrumentedListener(inner net.Listener, metrics *ListenerMetrics) net.Listener {
 	return &connTrackListener{
 		Listener: inner,
 		metrics:  metrics,
