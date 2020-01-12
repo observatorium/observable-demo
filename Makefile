@@ -16,8 +16,8 @@ all: format build
 
 .PHONY: build
 build: deps
-	@echo ">> building cache"
-	@go build cmd/cache
+	@echo ">> building loadbalancer"
+	@go build ./cmd/loadbalancer/...
 
 # deps ensures fresh go.mod and go.sum.
 .PHONY: deps
@@ -29,7 +29,7 @@ deps:
 .PHONY: format
 format: $(GOIMPORTS)
 	@echo ">> formatting code"
-	@go fmt -w $(FILES_TO_FMT)
+	@goimports -w $(FILES_TO_FMT)
 
 # TODO: linting.
 
