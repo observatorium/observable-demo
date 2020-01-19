@@ -2,9 +2,12 @@ package lbtransport
 
 import (
 	"context"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // TargetPicker decides which target to pick for a given call.
@@ -17,7 +20,7 @@ type TargetPicker interface {
 
 // Target represents the canonical address of a backend.
 type Target struct {
-	DialAddr string
+	DialAddr url.URL
 }
 
 // RoundRobinPicker picks target using round robin behaviour.
@@ -29,17 +32,27 @@ type RoundRobinPicker struct {
 	blacklistMu              sync.RWMutex
 	blacklistedTargets       map[Target]time.Time
 
-	roundRobinCounter uint64
+	backlistedTargetsNum prometheus.Gauge
+	roundRobinCounter    uint64
 
 	// For testing purposes.
 	timeNow func() time.Time
 }
 
-func NewRoundRobinPicker(ctx context.Context, backoffDuration time.Duration) *RoundRobinPicker {
+func NewRoundRobinPicker(ctx context.Context, reg prometheus.Registerer, backoffDuration time.Duration) *RoundRobinPicker {
 	rr := &RoundRobinPicker{
 		blacklistBackoffDuration: backoffDuration,
 		blacklistedTargets:       make(map[Target]time.Time),
 		timeNow:                  time.Now,
+		backlistedTargetsNum: prometheus.NewGauge(prometheus.GaugeOpts{
+			Subsystem: "lbtransport",
+			Name:      "blacklisted_targets",
+			Help:      "Number of targets that are blacklisted.",
+		}),
+	}
+
+	if reg != nil {
+		reg.MustRegister(rr.backlistedTargetsNum)
 	}
 
 	go func() {
@@ -65,6 +78,7 @@ func (rr *RoundRobinPicker) cleanUpBlacklist() {
 			delete(rr.blacklistedTargets, target) // Expired.
 		}
 	}
+	rr.backlistedTargetsNum.Set(float64(len(rr.blacklistedTargets)))
 }
 
 func (rr *RoundRobinPicker) isTargetBlacklisted(target *Target) bool {
@@ -76,7 +90,8 @@ func (rr *RoundRobinPicker) isTargetBlacklisted(target *Target) bool {
 		return false
 	}
 
-	// It is blacklisted, but check if still valid. If not then false - it's not actually blacklisted.
+	// It is blacklisted, but check if still valid.
+	// If not then false - it's not actually blacklisted.
 	return failTime.Add(rr.blacklistBackoffDuration).After(rr.timeNow())
 }
 
@@ -102,4 +117,6 @@ func (rr *RoundRobinPicker) ExcludeTarget(target *Target) {
 	defer rr.blacklistMu.Unlock()
 
 	rr.blacklistedTargets[*target] = rr.timeNow()
+
+	rr.backlistedTargetsNum.Set(float64(len(rr.blacklistedTargets)))
 }
