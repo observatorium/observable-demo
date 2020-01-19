@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+//nolint:funlen
 func TestReplayableReader(t *testing.T) {
 	for _, tcase := range []struct {
 		name                string
@@ -91,21 +92,22 @@ func TestReplayableReader(t *testing.T) {
 			expectedErrs:  []error{nil, nil, io.EOF},
 		},
 	} {
-		if ok := t.Run(tcase.name, func(t *testing.T) {
-			b := newReplayableReader(tcase.src)
+		ttCase := tcase
 
-			for i, read := range tcase.sequentialReadBytes {
-				if tcase.rewindBeforeRead[i] {
+		if ok := t.Run(tcase.name, func(tt *testing.T) {
+			b := newReplayableReader(ttCase.src)
+
+			for i, read := range ttCase.sequentialReadBytes {
+				if ttCase.rewindBeforeRead[i] {
 					b.rewind()
 				}
 				toRead := make([]byte, read)
 
 				n, err := b.Read(toRead)
-				require.Equal(t, tcase.expectedErrs[i], err, "read %d", i+1)
-				require.Len(t, tcase.expectedBytes[i], n, "read %d", i+1)
-				require.Equal(t, tcase.expectedBytes[i], toRead[:len(tcase.expectedBytes[i])], "read %d", i+1)
+				require.Equal(tt, ttCase.expectedErrs[i], err, "read %d", i+1)
+				require.Len(tt, ttCase.expectedBytes[i], n, "read %d", i+1)
+				require.Equal(tt, ttCase.expectedBytes[i], toRead[:len(ttCase.expectedBytes[i])], "read %d", i+1)
 			}
-
 		}); !ok {
 			return
 		}

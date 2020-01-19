@@ -49,6 +49,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			m.duration,
 		)
 	}
+
 	return &m
 }
 
@@ -87,7 +88,7 @@ func (t *Transport) RoundTrip(r *http.Request) (*http.Response, error) {
 	targets := t.discovery.Targets()
 	if len(targets) == 0 {
 		runutil.ExhaustCloseWithLogOnErr(r.Body)
-		return nil, errors.Errorf("lb: no target is available for %s")
+		return nil, errors.Errorf("lb: no target is available")
 	}
 
 	if r.Body != nil {
@@ -98,7 +99,7 @@ func (t *Transport) RoundTrip(r *http.Request) (*http.Response, error) {
 		r.Body = newReplayableReader(body)
 	}
 
-	for r.Context().Err == nil {
+	for r.Context().Err() == nil {
 		target := t.picker.Pick(targets)
 
 		// Override the host for downstream Tripper, usually http.DefaultTransport.
@@ -127,6 +128,7 @@ func (t *Transport) RoundTrip(r *http.Request) (*http.Response, error) {
 		// NOTE: We need to trust picker that it blacklist the targets well.
 		t.picker.ExcludeTarget(target)
 	}
+
 	return nil, r.Context().Err()
 }
 
@@ -136,5 +138,6 @@ func isDialError(err error) bool {
 			return true
 		}
 	}
+
 	return false
 }

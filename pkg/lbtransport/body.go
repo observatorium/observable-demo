@@ -20,6 +20,7 @@ func (b *replayableReader) rewind() {
 	if b == nil {
 		return
 	}
+
 	b.offset = 0
 }
 
@@ -40,6 +41,7 @@ func (b *replayableReader) Read(p []byte) (n int, err error) {
 		tmp := bytes.NewBuffer(b.buf)
 		n64, err = tmp.ReadFrom(io.LimitReader(b.wrapped, int64(len(p)-n)))
 		b.buf = tmp.Bytes()
+
 		if n64 > 0 {
 			copy(p[n:], b.buf[b.offset:])
 			n += int(n64)
@@ -51,6 +53,7 @@ func (b *replayableReader) Read(p []byte) (n int, err error) {
 	if err == nil && n == 0 && len(p) > 0 {
 		return 0, io.EOF
 	}
+
 	return n, err
 }
 
@@ -62,5 +65,6 @@ func newReplayableReader(src io.Reader) *replayableReader {
 	if src == nil {
 		return nil
 	}
+
 	return &replayableReader{wrapped: src}
 }

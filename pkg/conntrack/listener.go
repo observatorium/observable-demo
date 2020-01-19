@@ -4,7 +4,6 @@ package conntrack
 
 import (
 	"net"
-	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -38,9 +37,11 @@ func NewListenerMetrics(reg prometheus.Registerer) *ListenerMetrics {
 				Help:      "Total number of connections closed that were made to the listener.",
 			}),
 	}
+
 	if reg != nil {
 		reg.MustRegister(m.acceptedTotal, m.closedTotal)
 	}
+
 	return m
 }
 
@@ -49,7 +50,7 @@ type connTrackListener struct {
 	metrics *ListenerMetrics
 }
 
-// NewInstrumentedListener returns the given listener wrapped in connection listener exposing Promethues metric.
+// NewInstrumentedListener returns the given listener wrapped in connection listener exposing Prometheus metric.
 func NewInstrumentedListener(inner net.Listener, metrics *ListenerMetrics) net.Listener {
 	return &connTrackListener{
 		Listener: inner,
@@ -62,23 +63,31 @@ func (ct *connTrackListener) Accept() (net.Conn, error) {
 		conn net.Conn
 		err  error
 	)
+
 	conn, err = ct.Listener.Accept()
 	if err != nil {
 		ct.metrics.failedAcceptsTotal.Inc()
 		return nil, err
 	}
+
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(5 * time.Minute)
+		if err := tcpConn.SetKeepAlive(true); err != nil {
+			return nil, err
+		}
+
+		if err := tcpConn.SetKeepAlivePeriod(5 * time.Minute); err != nil {
+			return nil, err
+		}
 	}
+
 	ct.metrics.acceptedTotal.Inc()
+
 	return newServerConnTracker(conn, ct.metrics.closedTotal), nil
 }
 
 type serverConnTracker struct {
 	net.Conn
 	closedTotal prometheus.Counter
-	mu          sync.Mutex
 }
 
 func newServerConnTracker(inner net.Conn, closedTotal prometheus.Counter) net.Conn {
@@ -86,12 +95,15 @@ func newServerConnTracker(inner net.Conn, closedTotal prometheus.Counter) net.Co
 		Conn:        inner,
 		closedTotal: closedTotal,
 	}
+
 	closedTotal.Inc()
+
 	return tracker
 }
 
 func (st *serverConnTracker) Close() error {
 	err := st.Conn.Close()
 	st.closedTotal.Inc()
+
 	return err
 }

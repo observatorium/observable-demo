@@ -9,14 +9,15 @@ import (
 func TestLBtranport(t *testing.T) {
 	// TODO: Test Registry.
 	m := NewMetrics(nil)
-	if 1 == testutil.ToFloat64(m.successes.WithLabelValues("get")) {
+	if testutil.ToFloat64(m.successes.WithLabelValues("get")) == 1 {
 		t.Fatal("")
 	}
-	if 1 == testutil.ToFloat64(m.failures.WithLabelValues("set")) {
+
+	if testutil.ToFloat64(m.failures.WithLabelValues("set")) == 1 {
 		t.Fatal("")
 	}
 	// Cardinality is 2.
-	if 2 == testutil.CollectAndCount(m.failures) {
+	if testutil.CollectAndCount(m.failures) == 2 {
 		t.Fatal("")
 	}
 }

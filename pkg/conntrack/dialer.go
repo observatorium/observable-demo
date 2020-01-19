@@ -55,6 +55,7 @@ func NewDialerMetrics(reg prometheus.Registerer) *DialerMetrics {
 				Help:      "Total number of connections closed which originated from dialer.",
 			}),
 	}
+
 	if reg != nil {
 		reg.MustRegister(m.attemptedTotal, m.connClosedTotal, m.connEstablishedTotal, m.connFailedTotal)
 	}
@@ -63,14 +64,15 @@ func NewDialerMetrics(reg prometheus.Registerer) *DialerMetrics {
 	m.connFailedTotal.WithLabelValues(failedConnRefused)
 	m.connFailedTotal.WithLabelValues(failedTimeout)
 	m.connFailedTotal.WithLabelValues(failedUnknown)
+
 	return m
 }
 
 // NewDialContextFunc returns a `DialContext` function that tracks outbound connections.
 // The signature is compatible with `http.Tranport.DialContext` and is meant to be used there.
 func NewInstrumentedDialContextFunc(parentDialContextFunc dialerContextFunc, metrics *DialerMetrics) func(context.Context, string, string) (net.Conn, error) {
-	return func(ctx context.Context, network string, addr string) (net.Conn, error) {
-		return dialClientConnTracker(ctx, network, addr, metrics, parentDialContextFunc)
+	return func(ctx context.Context, ntk string, addr string) (net.Conn, error) {
+		return dialClientConnTracker(ctx, ntk, addr, metrics, parentDialContextFunc)
 	}
 }
 
@@ -79,14 +81,17 @@ type clientConnTracker struct {
 	connClosedTotal prometheus.Counter
 }
 
-func dialClientConnTracker(ctx context.Context, network string, addr string, metrics *DialerMetrics, parentDialContextFunc dialerContextFunc) (net.Conn, error) {
+func dialClientConnTracker(ctx context.Context, ntk string, addr string, metrics *DialerMetrics, parentDialContextFunc dialerContextFunc) (net.Conn, error) {
 	metrics.attemptedTotal.Inc()
-	conn, err := parentDialContextFunc(ctx, network, addr)
+
+	conn, err := parentDialContextFunc(ctx, ntk, addr)
 	if err != nil {
 		metrics.connFailedTotal.WithLabelValues(dialErrToReason(err)).Inc()
 		return conn, err
 	}
+
 	metrics.connEstablishedTotal.Inc()
+
 	return &clientConnTracker{
 		Conn:            conn,
 		connClosedTotal: metrics.connClosedTotal,
@@ -102,19 +107,23 @@ func dialErrToReason(err error) string {
 			if nestErr.Err == syscall.ECONNREFUSED {
 				return failedConnRefused
 			}
+
 			return failedUnknown
 		}
+
 		if netErr.Timeout() {
 			return failedTimeout
 		}
 	} else if err == context.Canceled || err == context.DeadlineExceeded {
 		return failedTimeout
 	}
+
 	return failedUnknown
 }
 
 func (ct *clientConnTracker) Close() error {
 	err := ct.Conn.Close()
 	ct.connClosedTotal.Inc()
+
 	return err
 }

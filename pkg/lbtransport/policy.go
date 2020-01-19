@@ -52,6 +52,7 @@ func NewRoundRobinPicker(ctx context.Context, backoffDuration time.Duration) *Ro
 			rr.cleanUpBlacklist()
 		}
 	}()
+
 	return rr
 }
 
@@ -82,15 +83,17 @@ func (rr *RoundRobinPicker) isTargetBlacklisted(target *Target) bool {
 func (rr *RoundRobinPicker) Pick(targets []*Target) *Target {
 	for range targets {
 		id := atomic.AddUint64(&(rr.roundRobinCounter), 1)
-		targetId := int(id % uint64(len(targets)))
-		target := targets[targetId]
+		targetID := int(id % uint64(len(targets)))
+		target := targets[targetID]
 
 		if rr.isTargetBlacklisted(target) {
 			// That target is blacklisted. Check another one.
 			continue
 		}
+
 		return target
 	}
+
 	return nil
 }
 

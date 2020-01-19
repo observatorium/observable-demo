@@ -11,10 +11,11 @@ type StaticDiscovery struct {
 }
 
 func NewStaticDiscovery(addrs []string, reg prometheus.Registerer) *StaticDiscovery {
-	var targets []*Target
+	targets := make([]*Target, len(addrs))
 	for _, a := range addrs {
 		targets = append(targets, &Target{DialAddr: a})
 	}
+
 	if reg != nil {
 		reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Subsystem: "lbtransport",
