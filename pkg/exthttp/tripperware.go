@@ -37,7 +37,9 @@ func NewClientMetrics(reg prometheus.Registerer) *ClientMetrics {
 			[]string{"target", "code", "method"},
 		),
 	}
-	reg.MustRegister(ins.requestDuration, ins.requestsInFlight, ins.requestsTotal)
+	if reg != nil {
+		reg.MustRegister(ins.requestDuration, ins.requestsInFlight, ins.requestsTotal)
+	}
 	return ins
 }
 
