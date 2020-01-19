@@ -43,7 +43,6 @@ func NewClientMetrics(reg prometheus.Registerer) *ClientMetrics {
 	return ins
 }
 
-// TODO(bwplotka): Comment.
 func NewMetricTripperware(metrics *ClientMetrics, target string, next http.RoundTripper) promhttp.RoundTripperFunc {
 	return promhttp.InstrumentRoundTripperDuration(
 		metrics.requestDuration.MustCurryWith(prometheus.Labels{"target": target}), promhttp.InstrumentRoundTripperCounter(

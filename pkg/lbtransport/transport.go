@@ -45,7 +45,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 				Subsystem: "lbtransport",
 				Name:      "proxy_duration_seconds",
 				Help:      "Duration of proxy logic.",
-				Buckets:   []float64{0.001, 0.01, 0.1, 0.3, 0.6, 1, 3, 6, 9, 20, 30, 60, 90, 120},
+				Buckets:   []float64{0.001, 0.01, 0.1, 0.3, 0.6, 1, 3, 10},
 			}),
 		dialerMetrics: conntrack.NewDialerMetrics(reg),
 		httpMetrics:   exthttp.NewClientMetrics(reg),
