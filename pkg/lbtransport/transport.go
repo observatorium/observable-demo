@@ -6,41 +6,50 @@ import (
 	"time"
 
 	"github.com/observatorium/observable-demo/pkg/conntrack"
+	"github.com/observatorium/observable-demo/pkg/exthttp"
 	"github.com/observatorium/observable-demo/pkg/runutil"
 	"github.com/pkg/errors"
-
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+const (
+	failedNoTargetAvailable = "no_target_available"
+	failedNoTargetResolved  = "no_target_resolved"
+	failedTimeout           = "timeout"
+	failedUnknown           = "unknown"
+)
+
 type Metrics struct {
-	successes *prometheus.CounterVec
+	successes prometheus.Counter
 	failures  *prometheus.CounterVec
-	duration  *prometheus.HistogramVec
+	duration  prometheus.Histogram
 
 	dialerMetrics *conntrack.DialerMetrics
+	httpMetrics   *exthttp.ClientMetrics
 }
 
 func NewMetrics(reg prometheus.Registerer) *Metrics {
-	var m Metrics
-
-	m.successes = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Subsystem: "lbtransport",
-		Name:      "rt_failures_total",
-		Help:      "Total number of cache failures against storage.",
-	}, []string{"operation"})
-	m.failures = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Subsystem: "lbtransport",
-		Name:      "rt_failures_total",
-		Help:      "Total number of cache failures against storage.",
-	}, []string{"address"})
-	m.dialerMetrics = conntrack.NewDialerMetrics(reg)
-	//m.duration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-	//	Subsystem: "lbtransport",
-	//	Name:      "picking_duration_seconds",
-	//	Help:      "Time it took to perform cache operation.",
-	//	Buckets:   []float64{0.01, 0.1, 0.3, 0.6, 1, 3, 6, 9, 20, 30, 60, 90, 120, 240, 360, 720},
-	//}, []string{"operation"}) // TODO: Failure duration vs success duration.
-	// Not sure where duration can be useful here (:
+	m := &Metrics{
+		successes: prometheus.NewCounter(prometheus.CounterOpts{
+			Subsystem: "lbtransport",
+			Name:      "proxied_requests_total",
+			Help:      "Total number successful proxy round trips.",
+		}),
+		failures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Subsystem: "lbtransport",
+			Name:      "proxied_failed_requests_total",
+			Help:      "Total number failed proxy round trips.",
+		}, []string{"reason"}),
+		duration: prometheus.NewHistogram(
+			prometheus.HistogramOpts{
+				Subsystem: "lbtransport",
+				Name:      "proxy_duration_seconds",
+				Help:      "Duration of proxy logic.",
+				Buckets:   []float64{0.001, 0.01, 0.1, 0.3, 0.6, 1, 3, 6, 9, 20, 30, 60, 90, 120},
+			}),
+		dialerMetrics: conntrack.NewDialerMetrics(reg),
+		httpMetrics:   exthttp.NewClientMetrics(reg),
+	}
 
 	if reg != nil {
 		reg.MustRegister(
@@ -50,7 +59,11 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		)
 	}
 
-	return &m
+	m.failures.WithLabelValues(failedUnknown)
+	m.failures.WithLabelValues(failedNoTargetAvailable)
+	m.failures.WithLabelValues(failedTimeout)
+	m.failures.WithLabelValues(failedNoTargetResolved)
+	return m
 }
 
 type Transport struct {
@@ -85,10 +98,15 @@ func NewLoadBalancingTransport(discovery Discovery, picker TargetPicker, metrics
 }
 
 func (t *Transport) RoundTrip(r *http.Request) (*http.Response, error) {
+	start := time.Now()
+	durationRT := 0 * time.Second
+	defer t.metrics.duration.Observe((time.Since(start) - durationRT).Seconds())
+
 	targets := t.discovery.Targets()
 	if len(targets) == 0 {
+		t.metrics.failures.WithLabelValues(failedNoTargetResolved).Inc()
 		runutil.ExhaustCloseWithLogOnErr(r.Body)
-		return nil, errors.Errorf("lb: no target is available")
+		return nil, errors.Errorf("lb: no target was resolved")
 	}
 
 	if r.Body != nil {
@@ -101,34 +119,44 @@ func (t *Transport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 	for r.Context().Err() == nil {
 		target := t.picker.Pick(targets)
+		if target == nil {
+			t.metrics.failures.WithLabelValues(failedNoTargetAvailable).Inc()
+			return nil, errors.Errorf("lb: no target is available")
+		}
 
 		// Override the host for downstream Tripper, usually http.DefaultTransport.
 		// http.Default Transport uses `URL.Host` for Dial(<host>) and relevant connection pooling.
 		// We override it to make sure it enters the appropriate dial method and the appropriate connection pool.
 		// See http.connectMethodKey.
-		r.URL.Host = target.DialAddr
+		addr := target.DialAddr
+		r.URL = &addr
 		if r.Body != nil {
 			r.Body.(*replayableReader).rewind()
 		}
 
-		resp, err := t.parent.RoundTrip(r)
+		startRT := time.Now()
+		// Wrap parent round tripper with our dynamic metric tripperware.
+		// NOTE: This has huge risk of being high cardinality for addresses that change frequently.
+		// For demo purposes our targets are static, so the cardinality is stable.
+		resp, err := exthttp.NewMetricTripperware(t.metrics.httpMetrics, target.DialAddr.String(), t.parent).RoundTrip(r)
 		if err == nil {
 			// Success.
-			t.metrics.successes.WithLabelValues(target.DialAddr).Inc()
+			durationRT = time.Since(startRT)
+			t.metrics.successes.Inc()
 			return resp, nil
 		}
 
 		if !isDialError(err) {
+			t.metrics.failures.WithLabelValues(failedUnknown).Inc()
 			return resp, err
 		}
-
-		t.metrics.failures.WithLabelValues(target.DialAddr).Inc()
 
 		// Retry without this target.
 		// NOTE: We need to trust picker that it blacklist the targets well.
 		t.picker.ExcludeTarget(target)
 	}
 
+	t.metrics.failures.WithLabelValues(failedTimeout).Inc()
 	return nil, r.Context().Err()
 }
 

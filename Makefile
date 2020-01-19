@@ -32,6 +32,7 @@ BIN_DIR ?= ./tmp/bin
 GOLANGCILINT ?= $(FIRST_GOPATH)/bin/golangci-lint
 GOLANGCILINT_VERSION ?= v1.21.0
 SHELLCHECK ?= $(BIN_DIR)/shellcheck
+PWD ?= $(shell pwd)
 
 .PHONY: all
 all: format build
@@ -39,7 +40,31 @@ all: format build
 .PHONY: build
 build: deps
 	@echo ">> building loadbalancer"
-	@go build -ldflags '${LDFLAGS}' ./cmd/loadbalancer/...
+	@go build -a -tags netgo -ldflags '${LDFLAGS}' ./cmd/loadbalancer/...
+
+.PHONY: docker
+docker: build
+	@echo ">> build docker"
+	@docker build -t observable-demo-image .
+
+.PHONY: demo
+demo: docker
+	@docker rm -f observable-demo || true
+	@echo ">> running Prometheus. Go to browser on http://localhost:9090 for Prometheus UI"
+	@docker run -d -v $(PWD)/demo-prometheus.yml:/etc/prometheus/prometheus.yml -p 8080:8080 -p 9090:9090 --name observable-demo observable-demo-image
+	@echo ">> running demo. Go to browser for http://localhost:8080/lb for triggering actions"
+	@docker exec -it observable-demo /bin/loadbalancer \
+	 --listen-address=:8080 \
+	 --listen-demo1-address=localhost:8081 \
+	 --listen-demo2-address=localhost:8082 \
+	 --listen-demo3-address=localhost:8083 \
+	 --targets=http://localhost:8081,http://localhost:8082,http://localhost:8083 || true
+	@docker kill observable-demo
+
+.PHONY: demo-test
+demo-test:
+	@echo ">> calling loadbalancer"
+	@while sleep 0.5; do curl -s http://localhost:8080/lb; done
 
 # deps ensures fresh go.mod and go.sum.
 .PHONY: deps

@@ -1,6 +1,10 @@
 package lbtransport
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"net/url"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
 
 type Discovery interface {
 	Targets() []*Target
@@ -10,8 +14,8 @@ type StaticDiscovery struct {
 	targets []*Target
 }
 
-func NewStaticDiscovery(addrs []string, reg prometheus.Registerer) *StaticDiscovery {
-	targets := make([]*Target, len(addrs))
+func NewStaticDiscovery(addrs []url.URL, reg prometheus.Registerer) *StaticDiscovery {
+	targets := make([]*Target, 0, len(addrs))
 	for _, a := range addrs {
 		targets = append(targets, &Target{DialAddr: a})
 	}

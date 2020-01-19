@@ -8,32 +8,32 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/observatorium/observable-demo/pkg/conntrack"
+	"github.com/observatorium/observable-demo/pkg/exthttp"
+	"github.com/observatorium/observable-demo/pkg/lbtransport"
+	"github.com/observatorium/observable-demo/pkg/lbtransport/lbutils"
 	"github.com/oklog/run"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/version"
-
-	"github.com/observatorium/observable-demo/pkg/conntrack"
-	extpromhttp "github.com/observatorium/observable-demo/pkg/extprom/http"
-	"github.com/observatorium/observable-demo/pkg/lbtransport"
 )
 
-const namespace = "loadbalancer"
-
-// TODO: Add global metric examples
-
-//nolint: funlen
 func main() {
 	var (
 		addr             = flag.String("listen-address", ":8080", "The address to listen on for HTTP requests.")
 		targets          = flag.String("targets", "", "Comma-separated URLs for target to load balance to.")
-		blacklistBackoff = flag.Duration("failed_target_backoff_duration", 2*time.Second, "Backoff duration in case of dial error for given backend")
+		blacklistBackoff = flag.Duration("failed_target_backoff_duration", 5*time.Second, "Backoff duration in case of dial error for given backend.")
+
+		demo1Addr = flag.String("listen-demo1-address", ":8081", "The demo1 address to listen on for HTTP requests.")
+		demo2Addr = flag.String("listen-demo2-address", ":8082", "The demo2 address to listen on for HTTP requests.")
+		demo3Addr = flag.String("listen-demo3-address", ":8083", "The demo3 address to listen on for HTTP requests.")
 
 		g = &run.Group{}
 
@@ -47,8 +47,7 @@ func main() {
 
 	// Register standard Go metric collectors, which are by default registered when using global registry.
 	reg.MustRegister(
-		version.NewCollector("observable-demo"),
-		prometheus.NewBuildInfoCollector(),
+		version.NewCollector(""),
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
@@ -56,8 +55,6 @@ func main() {
 			Help: "Configured backoff time for unavailable target.",
 		}, func() float64 { return blacklistBackoff.Seconds() }), // nolint: gocritic
 	)
-
-	// TODO: Tripperware metrics
 
 	// Listen for termination signals.
 	{
@@ -68,21 +65,33 @@ func main() {
 			close(cancel)
 		})
 	}
+
+	var targetURLs []url.URL
+	for _, addr := range strings.Split(*targets, ",") {
+		u, err := url.Parse(addr)
+		if err != nil {
+			log.Fatalf("failed to parse target %v; err: %v", addr, err)
+		}
+		targetURLs = append(targetURLs, *u)
+	}
 	// Server listen for loadbalancer.
 	{
 		mux := http.NewServeMux()
 
-		static := lbtransport.NewStaticDiscovery(strings.Split(*targets, ","), reg)
-		picker := lbtransport.NewRoundRobinPicker(ctx, *blacklistBackoff)
+		static := lbtransport.NewStaticDiscovery(targetURLs, reg)
+		picker := lbtransport.NewRoundRobinPicker(ctx, reg, *blacklistBackoff)
 		l7LoadBalancer := &httputil.ReverseProxy{
-			Transport: lbtransport.NewLoadBalancingTransport(static, picker, lbtransport.NewMetrics(reg)),
+			Director:       func(request *http.Request) {},
+			ModifyResponse: func(response *http.Response) error { return nil },
+			Transport:      lbtransport.NewLoadBalancingTransport(static, picker, lbtransport.NewMetrics(reg)),
 		}
 
-		ins := extpromhttp.NewInstrumentationMiddleware(reg)
-		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-		mux.Handle("/lb", ins.NewHandler("lb", l7LoadBalancer))
+		mux.Handle("/metrics", exthttp.NewMetricsMiddlewareHandler(
+			reg, "/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}),
+		))
+		mux.Handle("/lb", exthttp.NewMetricsMiddlewareHandler(reg, "/lb", l7LoadBalancer))
 
-		srv := &http.Server{Addr: *addr, Handler: mux}
+		srv := &http.Server{Handler: mux}
 
 		l, err := net.Listen("tcp", *addr)
 		if err != nil {
@@ -90,9 +99,11 @@ func main() {
 		}
 		g.Add(func() error {
 			return srv.Serve(
-				conntrack.NewInstrumentedListener(l, conntrack.NewListenerMetrics(
-					prometheus.WrapRegistererWithPrefix(namespace, reg),
-				),
+				conntrack.NewInstrumentedListener(
+					l,
+					conntrack.NewListenerMetrics(
+						prometheus.WrapRegistererWith(prometheus.Labels{"listener": "lb"}, reg),
+					),
 				),
 			)
 		}, func(error) {
@@ -104,7 +115,10 @@ func main() {
 			}
 		})
 	}
+	// For demo purposes.
+	lbutils.CreateDemoEndpoints(reg, g, *demo1Addr, *demo2Addr, *demo3Addr)
 
+	log.Printf("Starting loadbalancer for targets: %v/n", targetURLs)
 	if err := g.Run(); err != nil {
 		log.Fatalf("running command failed %v; exiting\n", err)
 	}
