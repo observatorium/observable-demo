@@ -1,6 +1,7 @@
 package lbtransport
 
 import (
+	stderrors "errors"
 	"net"
 	"net/http"
 	"time"
@@ -161,8 +162,9 @@ func (t *Transport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func isDialError(err error) bool {
-	if opErr, ok := err.(*net.OpError); ok {
-		if opErr.Op == "dial" {
+	var e *net.OpError
+	if stderrors.As(err, &e) {
+		if e.Op == "dial" {
 			return true
 		}
 	}

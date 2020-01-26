@@ -2,6 +2,7 @@ package conntrack
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"syscall"
@@ -99,8 +100,9 @@ func dialClientConnTracker(ctx context.Context, ntk string, addr string, metrics
 }
 
 func dialErrToReason(err error) string {
-	if netErr, ok := err.(*net.OpError); ok {
-		switch nestErr := netErr.Err.(type) {
+	var e *net.OpError
+	if errors.As(err, &e) {
+		switch nestErr := e.Err.(type) {
 		case *net.DNSError:
 			return failedResolution
 		case *os.SyscallError:
@@ -111,7 +113,7 @@ func dialErrToReason(err error) string {
 			return failedUnknown
 		}
 
-		if netErr.Timeout() {
+		if e.Timeout() {
 			return failedTimeout
 		}
 	} else if err == context.Canceled || err == context.DeadlineExceeded {
